@@ -12,6 +12,8 @@ import {
 
 import { MONITORING_STATUS } from "./monitoringConfig";
 import { useAlarm } from "./useAlarm";
+import { useAudioRecorder } from "./useAudioRecorder";
+
 import {
   createAlarmLog,
   createSnoreEvent,
@@ -48,10 +50,6 @@ export const useSnoreMonitoring = () => {
   // --- Refs ---
   const sessionIdRef = useRef(null);
   const reportIdRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const streamRef = useRef(null);
-  const workletNodeRef = useRef(null);
-  const pcmBufferRef = useRef([]);
   const cooldownTimerRef = useRef(null);
 
   const snoreStreakRef = useRef(0);
@@ -187,93 +185,6 @@ export const useSnoreMonitoring = () => {
     },
     [predictSnoreAsync, saveSnoreStreak],
   );
-
-  /**
-   * 미디어 레코더 중지 및 스트림 릴리즈
-   */
-  const stopRecording = useCallback(() => {
-    if (workletNodeRef.current) {
-      workletNodeRef.current.port.onmessage = null;
-      workletNodeRef.current.disconnect();
-      workletNodeRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    pcmBufferRef.current = [];
-  }, []);
-
-  /**
-   * 녹음 시작 — AudioWorklet으로 raw PCM 캡처, AI 판단 완료 후 다음 청크 시작
-   */
-  const startRecording = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-
-      const AudioCtx =
-        window.AudioContext || /** @type {any} */ (window).webkitAudioContext;
-      const audioContext = new AudioCtx();
-      audioContextRef.current = audioContext;
-
-      const sampleRate = audioContext.sampleRate;
-      const samplesNeeded = Math.round(
-        (sampleRate * RECORDING_INTERVAL_MS) / 1000,
-      );
-
-      const processorCode = `
-        class PCMProcessor extends AudioWorkletProcessor {
-          process(inputs) {
-            const ch = inputs[0]?.[0];
-            if (ch) this.port.postMessage(ch.slice());
-            return true;
-          }
-        }
-        registerProcessor('pcm-processor', PCMProcessor);
-      `;
-      const blobUrl = URL.createObjectURL(
-        new Blob([processorCode], { type: "application/javascript" }),
-      );
-      await audioContext.audioWorklet.addModule(blobUrl);
-      URL.revokeObjectURL(blobUrl);
-
-      const source = audioContext.createMediaStreamSource(stream);
-      const workletNode = new AudioWorkletNode(audioContext, "pcm-processor");
-      workletNodeRef.current = workletNode;
-      source.connect(workletNode);
-
-      pcmBufferRef.current = [];
-
-      workletNode.port.onmessage = async (event) => {
-        if (isProcessingAudioRef.current) {
-          pcmBufferRef.current = [];
-          return;
-        }
-
-        pcmBufferRef.current.push(event.data);
-        const total = pcmBufferRef.current.reduce((s, c) => s + c.length, 0);
-
-        if (total >= samplesNeeded) {
-          const merged = new Float32Array(total);
-          let off = 0;
-          for (const c of pcmBufferRef.current) {
-            merged.set(c, off);
-            off += c.length;
-          }
-          pcmBufferRef.current = [];
-
-          await sendAudio(merged.subarray(0, samplesNeeded), sampleRate);
-        }
-      };
-    } catch (err) {
-      console.error("마이크 접근 오류:", err);
-    }
-  }, [sendAudio]);
 
   /**
    * 세션 컨트롤 로직
@@ -449,6 +360,11 @@ export const useSnoreMonitoring = () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
   }, [monitoringStatus]);
+
+  // --- hooks ---
+  const { startRecording, stopRecording } = useAudioRecorder({
+    onAudioChunk: sendAudio,
+  });
 
   // --- 언마운트 클린업 ---
   useEffect(() => {
