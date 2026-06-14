@@ -7,7 +7,6 @@ import { useAsync } from "@/shared/api";
 import {
   checkMicPermission,
   requestMicPermission,
-  float32ArrayToWav,
 } from "@/shared/lib/audio";
 
 import { MONITORING_STATUS } from "./monitoringConfig";
@@ -21,10 +20,8 @@ import {
   updateSession,
   predictSnore,
 } from "@/pages/snore-monitoring/api";
+import { useSnoreDetection } from "./useSnoreDetection";
 
-const RECORDING_INTERVAL_MS = 3000;
-const SNORE_GAP_LIMIT_SECONDS = 30;
-const SNORE_MIN_DURATION_SECONDS = 10;
 const ALARM_COOLDOWN_MS = 30 * 60 * 1000; // 30분
 
 export const useSnoreMonitoring = () => {
@@ -44,7 +41,6 @@ export const useSnoreMonitoring = () => {
   const [monitoringStatus, setMonitoringStatus] = useState(
     MONITORING_STATUS.IDLE,
   );
-  const [snoreDetections, setSnoreDetections] = useState([]);
   const [isCooldown, setIsCooldown] = useState(false);
 
   // --- Refs ---
@@ -52,17 +48,9 @@ export const useSnoreMonitoring = () => {
   const reportIdRef = useRef(null);
   const cooldownTimerRef = useRef(null);
 
-  const snoreStreakRef = useRef(0);
   const lastAlarmTimeRef = useRef(0);
   const patternValidSince = useRef(new Date());
   const alarmActiveRef = useRef(user?.alarmCondition !== "3");
-  const isProcessingAudioRef = useRef(false);
-
-  const currentStreakRef = useRef({
-    startedAt: null,
-    lastDetectedAt: null,
-    confidences: [],
-  });
 
   // --- 헬퍼 함수 ---
   const initValidRefs = useCallback(() => {
@@ -99,92 +87,6 @@ export const useSnoreMonitoring = () => {
       }
     });
   };
-
-  /**
-   * 지속 시간 조건 충족 시 코골이 세션 저장
-   */
-  const saveSnoreStreak = useCallback(async () => {
-    const { startedAt, lastDetectedAt, confidences } = currentStreakRef.current;
-    if (!startedAt || !lastDetectedAt) return;
-
-    const durationSeconds =
-      (lastDetectedAt.getTime() - startedAt.getTime()) / 1000;
-
-    if (durationSeconds >= SNORE_MIN_DURATION_SECONDS && sessionIdRef.current) {
-      const avgConfidence =
-        confidences.reduce((a, b) => a + b, 0) / confidences.length;
-
-      await createSnoreEventAsync(sessionIdRef.current, {
-        startTime: startedAt,
-        endTime: lastDetectedAt,
-        avgConfidence: Number(avgConfidence.toFixed(2)),
-      });
-    }
-
-    currentStreakRef.current = {
-      startedAt: null,
-      lastDetectedAt: null,
-      confidences: [],
-    };
-  }, [createSnoreEventAsync]);
-
-  /**
-   * AI 분석을 위해 오디오 데이터 전송 및 결과 처리
-   */
-  const sendAudio = useCallback(
-    async (samples, sampleRate) => {
-      if (!samples?.length) return;
-      if (isProcessingAudioRef.current) return;
-      isProcessingAudioRef.current = true;
-      try {
-        const wavBlob = float32ArrayToWav(samples, sampleRate);
-
-        const formData = new FormData();
-        formData.append("audio", wavBlob, "recording.wav");
-
-        const response = await predictSnoreAsync(formData);
-        if (!response?.success) return;
-
-        const now = new Date();
-        const isSnore = response.data.predicted === "snore";
-        const confidence = response.data.snoreProb || 1.0;
-
-        if (isSnore) {
-          if (!currentStreakRef.current.startedAt) {
-            currentStreakRef.current = {
-              startedAt: now,
-              lastDetectedAt: now,
-              confidences: [confidence],
-            };
-          } else {
-            currentStreakRef.current.lastDetectedAt = now;
-            currentStreakRef.current.confidences.push(confidence);
-          }
-          setSnoreDetections((prev) => [
-            ...prev,
-            { startedAt: now, confidence },
-          ]);
-          snoreStreakRef.current += 1;
-        } else {
-          snoreStreakRef.current = 0;
-          if (currentStreakRef.current.startedAt) {
-            const gapSeconds =
-              (currentStreakRef.current.lastDetectedAt.getTime() -
-                currentStreakRef.current.startedAt.getTime()) /
-              1000;
-            if (gapSeconds > SNORE_GAP_LIMIT_SECONDS) {
-              await saveSnoreStreak();
-            }
-          }
-        }
-      } catch (err) {
-        console.error("오디오 분석 중 오류 발생:", err);
-      } finally {
-        isProcessingAudioRef.current = false;
-      }
-    },
-    [predictSnoreAsync, saveSnoreStreak],
-  );
 
   /**
    * 세션 컨트롤 로직
@@ -310,6 +212,18 @@ export const useSnoreMonitoring = () => {
     }
   }, [isCooldown, playAlarm, createAlarmLogAsync]);
 
+  // --- hooks ---
+  const { processAudio, saveSnoreStreak, snoreDetections, snoreStreakRef } =
+    useSnoreDetection({
+      predictSnoreAsync,
+      createSnoreEventAsync,
+      sessionIdRef,
+    });
+
+  const { startRecording, stopRecording } = useAudioRecorder({
+    onAudioChunk: processAudio,
+  });
+
   // --- 알람 조건 감시 및 트리거 효과 ---
   useEffect(() => {
     if (monitoringStatus !== MONITORING_STATUS.RUNNING) return;
@@ -360,11 +274,6 @@ export const useSnoreMonitoring = () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
   }, [monitoringStatus]);
-
-  // --- hooks ---
-  const { startRecording, stopRecording } = useAudioRecorder({
-    onAudioChunk: sendAudio,
-  });
 
   // --- 언마운트 클린업 ---
   useEffect(() => {
