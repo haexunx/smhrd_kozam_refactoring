@@ -1,17 +1,15 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "@/shared/lib/auth";
 import { useModal } from "@/shared/lib/modal";
 import { useAsync } from "@/shared/api";
-import {
-  checkMicPermission,
-  requestMicPermission,
-} from "@/shared/lib/audio";
+import { checkMicPermission, requestMicPermission } from "@/shared/lib/audio";
 
 import { MONITORING_STATUS } from "./monitoringConfig";
-import { useAlarm } from "./useAlarm";
 import { useAudioRecorder } from "./useAudioRecorder";
+import { useSnoreDetection } from "./useSnoreDetection";
+import { useAlertManager } from "./useAlertManager";
 
 import {
   createAlarmLog,
@@ -20,43 +18,47 @@ import {
   updateSession,
   predictSnore,
 } from "@/pages/snore-monitoring/api";
-import { useSnoreDetection } from "./useSnoreDetection";
-
-const ALARM_COOLDOWN_MS = 30 * 60 * 1000; // 30분
 
 export const useSnoreMonitoring = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { openModal, closeModal } = useModal();
-  const { playAlarm, stopAlarm, isPlayingAlarm } = useAlarm();
+
+  // --- 테스트 모드 설정 (true로 설정 시 무조건 코골이로 감지합니다) ---
+  const IS_TEST_MODE = true;
+
+  const mockPredictSnore = async () => {
+    // 0.5초 대기 후 강제 코골이 응답 반환
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    console.log("[Test Mode] 코골이 강제 감지 (snore)");
+    return {
+      success: true,
+      data: {
+        predicted: "snore",
+        snoreProb: 0.98,
+        rms: 0.08,
+        intensity: "high",
+      },
+    };
+  };
 
   // --- API 비동기 훅 ---
   const { execute: createSessionAsync, isLoading } = useAsync(createSession);
   const { execute: updateSessionAsync } = useAsync(updateSession);
   const { execute: createSnoreEventAsync } = useAsync(createSnoreEvent);
   const { execute: createAlarmLogAsync } = useAsync(createAlarmLog);
-  const { execute: predictSnoreAsync } = useAsync(predictSnore);
+  const { execute: predictSnoreAsync } = useAsync(
+    IS_TEST_MODE ? mockPredictSnore : predictSnore
+  );
 
   // --- 상태 관리 ---
   const [monitoringStatus, setMonitoringStatus] = useState(
     MONITORING_STATUS.IDLE,
   );
-  const [isCooldown, setIsCooldown] = useState(false);
 
   // --- Refs ---
   const sessionIdRef = useRef(null);
   const reportIdRef = useRef(null);
-  const cooldownTimerRef = useRef(null);
-
-  const lastAlarmTimeRef = useRef(0);
-  const patternValidSince = useRef(new Date());
-  const alarmActiveRef = useRef(user?.alarmCondition !== "3");
-
-  // --- 헬퍼 함수 ---
-  const initValidRefs = useCallback(() => {
-    snoreStreakRef.current = 0;
-    patternValidSince.current = new Date();
-  }, []);
 
   const handleMicPermission = async () => {
     const { state } = await checkMicPermission();
@@ -107,22 +109,14 @@ export const useSnoreMonitoring = () => {
    * 모니터링 세션 종료
    */
   const stopSession = async () => {
-    // 1. 상태를 먼저 '종료 중'으로 변경하여 알람 트리거 useEffect를 즉시 차단
     setMonitoringStatus(MONITORING_STATUS.FINISHING);
 
-    // 2. 알람 및 타이머 관련 상태 완전 초기화
     stopAlarm();
-    setIsCooldown(false);
-    if (cooldownTimerRef.current) {
-      clearTimeout(cooldownTimerRef.current);
-      cooldownTimerRef.current = null;
-    }
 
-    // 3. 녹음 중지 및 남은 데이터 저장
     stopRecording();
+
     await saveSnoreStreak();
 
-    // 4. 서버 세션 업데이트
     if (sessionIdRef.current) {
       const response = await updateSessionAsync(sessionIdRef.current, {
         endedAt: new Date(),
@@ -132,7 +126,6 @@ export const useSnoreMonitoring = () => {
 
       reportIdRef.current = response.data.reportId;
 
-      // 5. 최종 정지 상태로 변경
       setMonitoringStatus(MONITORING_STATUS.STOPPED);
     }
   };
@@ -161,57 +154,6 @@ export const useSnoreMonitoring = () => {
     }
   };
 
-  const handleToggleCooldown = () => {
-    if (monitoringStatus !== MONITORING_STATUS.RUNNING) return;
-
-    if (isPlayingAlarm()) {
-      stopAlarm();
-      return;
-    }
-
-    setIsCooldown((prev) => {
-      const nextState = !prev;
-      if (cooldownTimerRef.current) {
-        clearTimeout(cooldownTimerRef.current);
-        cooldownTimerRef.current = null;
-      }
-
-      if (nextState) {
-        // 쿨다운 켜기
-        cooldownTimerRef.current = setTimeout(
-          () => setIsCooldown(false),
-          ALARM_COOLDOWN_MS,
-        );
-      } else {
-        // 쿨다운 끄기
-        initValidRefs();
-      }
-      return nextState;
-    });
-  };
-
-  // --- 알람 발생 유틸 함수 ---
-  const triggerAlarmWithCooldown = useCallback(async () => {
-    const now = Date.now();
-    if (isCooldown && now - lastAlarmTimeRef.current < ALARM_COOLDOWN_MS)
-      return;
-
-    lastAlarmTimeRef.current = now;
-    setIsCooldown(true);
-    playAlarm();
-
-    cooldownTimerRef.current = setTimeout(
-      () => setIsCooldown(false),
-      ALARM_COOLDOWN_MS,
-    );
-
-    if (sessionIdRef.current) {
-      await createAlarmLogAsync(sessionIdRef.current, {
-        triggeredAt: new Date(),
-      });
-    }
-  }, [isCooldown, playAlarm, createAlarmLogAsync]);
-
   // --- hooks ---
   const { processAudio, saveSnoreStreak, snoreDetections, snoreStreakRef } =
     useSnoreDetection({
@@ -224,41 +166,14 @@ export const useSnoreMonitoring = () => {
     onAudioChunk: processAudio,
   });
 
-  // --- 알람 조건 감시 및 트리거 효과 ---
-  useEffect(() => {
-    if (monitoringStatus !== MONITORING_STATUS.RUNNING) return;
-    if (!alarmActiveRef.current) return;
-
-    const condition = String(user?.alarmCondition);
-
-    // 1. 지속 시간 기반 알람 (연속 4회 감지 = 약 12초)
-    if (condition === "1" && snoreStreakRef.current > 3) {
-      triggerAlarmWithCooldown();
-      return;
-    }
-
-    // 2. 빈도 패턴 기반 알람 (1분 내 5회 이상)
-    if (condition === "2" && snoreDetections.length >= 5) {
-      const lastSnoreTime = new Date(
-        snoreDetections.at(-1)?.startedAt,
-      ).getTime();
-      const fifthLastSnoreTime = new Date(
-        snoreDetections.at(-5)?.startedAt,
-      ).getTime();
-
-      if (
-        fifthLastSnoreTime >= patternValidSince.current.getTime() &&
-        lastSnoreTime - fifthLastSnoreTime < 60 * 1000
-      ) {
-        triggerAlarmWithCooldown();
-      }
-    }
-  }, [
-    snoreDetections,
-    user?.alarmCondition,
+  const { isCooldown, handleToggleCooldown, stopAlarm } = useAlertManager({
     monitoringStatus,
-    triggerAlarmWithCooldown,
-  ]);
+    sessionIdRef,
+    user,
+    snoreDetections,
+    snoreStreakRef,
+    createAlarmLogAsync,
+  });
 
   useEffect(() => {
     const handleBeforeUnload = (e) => {
@@ -279,7 +194,6 @@ export const useSnoreMonitoring = () => {
   useEffect(() => {
     return () => {
       stopRecording();
-      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
       stopAlarm();
     };
   }, [stopRecording, stopAlarm]);
