@@ -14,18 +14,40 @@ except ImportError:
     PYDUB_AVAILABLE = False
 
 SAMPLE_RATE      = 16000
-CLIP_DURATION    = 3.0
-EXPECTED_SAMPLES = int(SAMPLE_RATE * CLIP_DURATION)
 N_MELS           = 128
 N_FFT            = 1024
 HOP_LENGTH       = 256
-MEL_SHAPE        = (128, 188)
 
 BASE           = Path(__file__).parent
 MODEL_PATH     = BASE / "models" / "snore_xgb_model.joblib"
+RF_MODEL_PATH  = BASE / "models" / "snore_rf_model.joblib"
 LABEL_MAP_PATH = BASE / "models" / "label_map.json"
 
-model = joblib.load(MODEL_PATH)
+# Default configurations for XGBoost (3.0s duration, 128x188 mel shape)
+clip_duration    = 3.0
+expected_samples = int(SAMPLE_RATE * clip_duration)
+mel_shape        = (128, 188)
+
+model = None
+using_rf = False
+
+try:
+    model = joblib.load(MODEL_PATH)
+except Exception as e:
+    sys.stderr.write(f"[WARNING] XGBoost model failed to load ({type(e).__name__}: {str(e)}).\n")
+    sys.stderr.write("[WARNING] Falling back to Random Forest model (snore_rf_model.joblib)...\n")
+    sys.stderr.flush()
+    try:
+        model = joblib.load(RF_MODEL_PATH)
+        using_rf = True
+        # Adjust dimensions for Random Forest model (2.0s duration, 128x126 mel shape)
+        clip_duration = 2.0
+        expected_samples = int(SAMPLE_RATE * clip_duration)
+        mel_shape = (128, 126)
+    except Exception as rf_err:
+        sys.stderr.write(f"[ERROR] Both models failed to load. RF model error: {rf_err}\n")
+        sys.stderr.flush()
+        raise rf_err
 with open(LABEL_MAP_PATH, encoding="utf-8") as f:
     label_map = {int(k): v for k, v in json.load(f).items()}
 
@@ -73,7 +95,7 @@ def load_audio(audio_bytes: bytes) -> np.ndarray:
     return audio.astype(np.float32)
 
 
-def pad_or_trim(audio: np.ndarray, length: int = EXPECTED_SAMPLES) -> np.ndarray:
+def pad_or_trim(audio: np.ndarray, length: int = expected_samples) -> np.ndarray:
     if len(audio) < length:
         return np.pad(audio, (0, length - len(audio))).astype(np.float32)
     return audio[:length].astype(np.float32)
@@ -89,7 +111,7 @@ def audio_to_mel(audio: np.ndarray) -> np.ndarray:
     mn, mx = mel_db.min(), mel_db.max()
     mel_db = (mel_db - mn) / (mx - mn) if mx - mn > 1e-8 else np.zeros_like(mel_db)
 
-    th, tw = MEL_SHAPE
+    th, tw = mel_shape
     h, w = mel_db.shape
     if h < th:
         mel_db = np.pad(mel_db, ((0, th - h), (0, 0)))
