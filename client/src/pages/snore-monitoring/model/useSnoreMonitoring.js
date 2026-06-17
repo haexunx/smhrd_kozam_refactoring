@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "@/shared/lib/auth";
@@ -18,6 +18,8 @@ import {
   updateSession,
   predictSnore,
 } from "@/pages/snore-monitoring/api";
+import { useMonitoringSession } from "./useMonitoringSession";
+import { useAlarm } from "./useAlarm";
 
 export const useSnoreMonitoring = () => {
   const navigate = useNavigate();
@@ -48,12 +50,7 @@ export const useSnoreMonitoring = () => {
   const { execute: createSnoreEventAsync } = useAsync(createSnoreEvent);
   const { execute: createAlarmLogAsync } = useAsync(createAlarmLog);
   const { execute: predictSnoreAsync } = useAsync(
-    IS_TEST_MODE ? mockPredictSnore : predictSnore
-  );
-
-  // --- 상태 관리 ---
-  const [monitoringStatus, setMonitoringStatus] = useState(
-    MONITORING_STATUS.IDLE,
+    IS_TEST_MODE ? mockPredictSnore : predictSnore,
   );
 
   // --- Refs ---
@@ -90,49 +87,13 @@ export const useSnoreMonitoring = () => {
     });
   };
 
-  /**
-   * 세션 컨트롤 로직
-   */
-  const startSession = async () => {
-    const granted = await handleMicPermission();
-    if (!granted) return;
-
-    const response = await createSessionAsync({ startedAt: new Date() });
-    if (!response?.success) return;
-
-    sessionIdRef.current = response.data.sessionId;
-    setMonitoringStatus(MONITORING_STATUS.RUNNING);
-    await startRecording();
-  };
-
-  /**
-   * 모니터링 세션 종료
-   */
-  const stopSession = async () => {
-    setMonitoringStatus(MONITORING_STATUS.FINISHING);
-
-    stopAlarm();
-
-    stopRecording();
-
-    await saveSnoreStreak();
-
-    if (sessionIdRef.current) {
-      const response = await updateSessionAsync(sessionIdRef.current, {
-        endedAt: new Date(),
-      });
-
-      if (!response.success) return;
-
-      reportIdRef.current = response.data.reportId;
-
-      setMonitoringStatus(MONITORING_STATUS.STOPPED);
-    }
-  };
-
   const handleToggleMonitoring = async () => {
     switch (monitoringStatus) {
       case MONITORING_STATUS.IDLE:
+        const granted = await handleMicPermission();
+
+        if (!granted) return;
+
         await startSession();
         break;
       case MONITORING_STATUS.RUNNING:
@@ -155,6 +116,8 @@ export const useSnoreMonitoring = () => {
   };
 
   // --- hooks ---
+  const { playAlarm, stopAlarm, isPlayingAlarm } = useAlarm();
+
   const { processAudio, saveSnoreStreak, snoreDetections, snoreStreakRef } =
     useSnoreDetection({
       predictSnoreAsync,
@@ -166,7 +129,21 @@ export const useSnoreMonitoring = () => {
     onAudioChunk: processAudio,
   });
 
-  const { isCooldown, handleToggleCooldown, stopAlarm } = useAlertManager({
+  const { monitoringStatus, startSession, stopSession } = useMonitoringSession({
+    sessionIdRef,
+    reportIdRef,
+    createSessionAsync,
+    updateSessionAsync,
+    startRecording,
+    stopRecording,
+    stopAlarm,
+    saveSnoreStreak,
+  });
+
+  const { isCooldown, handleToggleCooldown } = useAlertManager({
+    playAlarm,
+    stopAlarm,
+    isPlayingAlarm,
     monitoringStatus,
     sessionIdRef,
     user,

@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
-import { useAlarm } from "./useAlarm";
 import { MONITORING_STATUS } from "./monitoringConfig";
 
 const ALARM_COOLDOWN_MS = 30 * 60 * 1000;
 
 export const useAlertManager = ({
+  playAlarm,
+  stopAlarm,
+  isPlayingAlarm,
   monitoringStatus,
   user,
   sessionIdRef,
@@ -13,8 +15,6 @@ export const useAlertManager = ({
   snoreStreakRef,
   createAlarmLogAsync,
 }) => {
-  const { playAlarm, stopAlarm, isPlayingAlarm } = useAlarm();
-
   const [isCooldown, setIsCooldown] = useState(false);
 
   const cooldownTimerRef = useRef(null);
@@ -135,6 +135,5 @@ export const useAlertManager = ({
   return {
     isCooldown,
     handleToggleCooldown,
-    stopAlarm,
   };
 };
