@@ -26,24 +26,6 @@ export const useSnoreMonitoring = () => {
   const { user } = useAuth();
   const { openModal, closeModal } = useModal();
 
-  // --- 테스트 모드 설정 (true로 설정 시 무조건 코골이로 감지합니다) ---
-  const IS_TEST_MODE = true;
-
-  const mockPredictSnore = async () => {
-    // 0.5초 대기 후 강제 코골이 응답 반환
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    console.log("[Test Mode] 코골이 강제 감지 (snore)");
-    return {
-      success: true,
-      data: {
-        predicted: "snore",
-        snoreProb: 0.98,
-        rms: 0.08,
-        intensity: "high",
-      },
-    };
-  };
-
   // --- API 비동기 훅 ---
   const { execute: createSessionAsync, isLoading } = useAsync(createSession);
   const { execute: updateSessionAsync } = useAsync(updateSession);
@@ -125,11 +107,11 @@ export const useSnoreMonitoring = () => {
     }
   };
 
+  // --- 브라우저 새로고침 확인 ---
   useEffect(() => {
     const handleBeforeUnload = (e) => {
       if (monitoringStatus === MONITORING_STATUS.RUNNING) {
         e.preventDefault();
-        // 현대 브라우저에서는 기본 경고창이 출력되며, 아래 문자열은 무시되지만 하위 호환성을 위해 작성합니다.
         e.returnValue = "";
       }
     };
