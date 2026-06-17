@@ -18,9 +18,17 @@ class SnoreModel:
         # 절대 경로로 변환하여 안정성을 확보합니다.
         base_path = Path(__file__).resolve().parent.parent
         self.model_path = base_path / model_path
+        self.rf_model_path = base_path / "models" / "snore_rf_model.joblib"
         self.label_map_path = base_path / label_map_path
         self.model = None
         self.label_map = None
+
+        # 기본 설정 (XGBoost - 3초, 128x188 mel)
+        self.clip_duration = 3.0
+        self.expected_samples = int(SAMPLE_RATE * self.clip_duration)
+        self.mel_shape = (128, 188)
+        self.using_rf = False
+
         self.load_model()
 
     def load_model(self):
@@ -31,12 +39,28 @@ class SnoreModel:
                     self.label_map = {int(k): v for k, v in json.load(f).items()}
                 print(f"[SUCCESS] Model loaded successfully from {self.model_path}")
             else:
-                print(f"[WARN] Model files not found. Expected at:\n  - {self.model_path}\n  - {self.label_map_path}")
+                raise FileNotFoundError("XGBoost model files not found")
         except Exception as e:
-            print(f"[ERROR] Error loading model: {e}")
+            print(f"[WARN] Failed to load XGBoost model: {e}")
+            print("[WARN] Falling back to Random Forest model...")
+            try:
+                if self.rf_model_path.exists() and self.label_map_path.exists():
+                    self.model = joblib.load(self.rf_model_path)
+                    with open(self.label_map_path, "r", encoding="utf-8") as f:
+                        self.label_map = {int(k): v for k, v in json.load(f).items()}
+                    self.using_rf = True
+                    self.clip_duration = 2.0
+                    self.expected_samples = int(SAMPLE_RATE * self.clip_duration)
+                    self.mel_shape = (128, 126)
+                    print(f"[SUCCESS] Fallback Random Forest model loaded successfully from {self.rf_model_path}")
+                else:
+                    print(f"[ERROR] Both model files not found. Expected RF model at: {self.rf_model_path}")
+            except Exception as rf_err:
+                print(f"[ERROR] Error loading fallback Random Forest model: {rf_err}")
 
-    def pad_or_trim(self, audio: np.ndarray, target_length: int = EXPECTED_SAMPLES) -> np.ndarray:
-        # 녹음 파일이 2초보다 짧으면 뒤를 0으로 채우고, 길면 2초로 자릅니다.
+    def pad_or_trim(self, audio: np.ndarray, target_length: int = None) -> np.ndarray:
+        if target_length is None:
+            target_length = self.expected_samples
         if len(audio) < target_length:
             audio = np.pad(audio, (0, target_length - len(audio)), mode="constant")
         elif len(audio) > target_length:
@@ -56,7 +80,9 @@ class SnoreModel:
             mel_db = np.zeros_like(mel_db)
         return mel_db
 
-    def ensure_shape(self, mel: np.ndarray, target_shape=(128, 188)) -> np.ndarray:
+    def ensure_shape(self, mel: np.ndarray, target_shape=None) -> np.ndarray:
+        if target_shape is None:
+            target_shape = self.mel_shape
         th, tw = target_shape
         h, w = mel.shape
         if h < th:

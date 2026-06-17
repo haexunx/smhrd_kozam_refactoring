@@ -30,16 +30,31 @@ app.post("/predict", upload.single("audio"), (req, res) => {
   py.stdout.on("data", (d) => (stdout += d));
   py.stderr.on("data", (d) => (stderr += d));
 
+  py.on("error", (err) => {
+    console.error("[Python 프로세스 오류]\n", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "프로세스 실행 실패", detail: err.message });
+    }
+  });
+
+  py.stdin.on("error", (err) => {
+    console.error("[Python stdin 오류]\n", err);
+  });
+
   py.on("close", (code) => {
     if (code === 0) {
       try {
         res.json(JSON.parse(stdout));
       } catch {
-        res.status(500).json({ error: "응답 파싱 실패", detail: stdout });
+        if (!res.headersSent) {
+          res.status(500).json({ error: "응답 파싱 실패", detail: stdout });
+        }
       }
     } else {
       console.error("[Python 오류]\n", stderr);
-      res.status(500).json({ error: "추론 실패", detail: stderr });
+      if (!res.headersSent) {
+        res.status(500).json({ error: "추론 실패", detail: stderr });
+      }
     }
   });
 
