@@ -28,9 +28,12 @@ export const AuthProvider = ({ children }) => {
   const login = async (credentials) => {
     try {
       const userData = await loginApi(credentials);
-      const user = userData.user;
-      setUser(user);
-      localStorage.setItem("userId", user.userId);
+      const loggedInUser = userData.user;
+      localStorage.setItem("userId", loggedInUser.userId);
+
+      // Fetch complete user profile (including alarmCondition)
+      const fullUserData = await getUserById(loggedInUser.userId);
+      setUser(fullUserData);
     } catch (error) {
       console.error("Login failed:", error);
       throw error;
