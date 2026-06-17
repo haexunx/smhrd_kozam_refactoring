@@ -4,12 +4,14 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/shared/lib/auth";
 import { useModal } from "@/shared/lib/modal";
 import { useAsync } from "@/shared/api";
-import { checkMicPermission, requestMicPermission } from "@/shared/lib/audio";
 
 import { MONITORING_STATUS } from "./monitoringConfig";
-import { useAudioRecorder } from "./useAudioRecorder";
+import { useAlarm } from "./useAlarm";
 import { useSnoreDetection } from "./useSnoreDetection";
+import { useAudioRecorder } from "./useAudioRecorder";
+import { useMonitoringSession } from "./useMonitoringSession";
 import { useAlertManager } from "./useAlertManager";
+import { useMicPermission } from "./useMicPermission";
 
 import {
   createAlarmLog,
@@ -18,8 +20,6 @@ import {
   updateSession,
   predictSnore,
 } from "@/pages/snore-monitoring/api";
-import { useMonitoringSession } from "./useMonitoringSession";
-import { useAlarm } from "./useAlarm";
 
 export const useSnoreMonitoring = () => {
   const navigate = useNavigate();
@@ -57,64 +57,6 @@ export const useSnoreMonitoring = () => {
   const sessionIdRef = useRef(null);
   const reportIdRef = useRef(null);
 
-  const handleMicPermission = async () => {
-    const { state } = await checkMicPermission();
-    if (state === "granted") return true;
-
-    return new Promise((resolve) => {
-      if (state === "prompt") {
-        openModal({
-          title: "마이크 권한 요청",
-          description:
-            "코골이 감지를 위해 마이크 권한이 필요해요.\n녹음 데이터는 저장되지 않고 분석에만 사용돼요.",
-          onConfirm: async () => {
-            const granted = await requestMicPermission();
-            resolve(granted);
-          },
-          onCancel: () => resolve(false),
-        });
-      } else if (state === "denied") {
-        openModal({
-          title: "마이크 권한 재설정 요청",
-          description:
-            "브라우저에서 마이크 권한을 다시 허용해야\n모니터링을 시작할 수 있어요.",
-          onConfirm: () => resolve(false),
-          showCancel: false,
-        });
-      } else {
-        resolve(false);
-      }
-    });
-  };
-
-  const handleToggleMonitoring = async () => {
-    switch (monitoringStatus) {
-      case MONITORING_STATUS.IDLE:
-        const granted = await handleMicPermission();
-
-        if (!granted) return;
-
-        await startSession();
-        break;
-      case MONITORING_STATUS.RUNNING:
-        openModal({
-          title: "모니터링을 종료할까요?",
-          description:
-            "확인을 누르면 모니터링을 종료하고\n수면 분석이 시작돼요.",
-          onConfirm: async () => {
-            closeModal();
-            await stopSession();
-          },
-        });
-        break;
-      case MONITORING_STATUS.STOPPED:
-        navigate(`/history/${reportIdRef.current || ""}`);
-        break;
-      default:
-        break;
-    }
-  };
-
   // --- hooks ---
   const { playAlarm, stopAlarm, isPlayingAlarm } = useAlarm();
 
@@ -151,6 +93,37 @@ export const useSnoreMonitoring = () => {
     snoreStreakRef,
     createAlarmLogAsync,
   });
+
+  const { handleMicPermission } = useMicPermission();
+
+  // --- 모니터링 토글 핸들러 ---
+  const handleToggleMonitoring = async () => {
+    switch (monitoringStatus) {
+      case MONITORING_STATUS.IDLE:
+        const granted = await handleMicPermission();
+
+        if (!granted) return;
+
+        await startSession();
+        break;
+      case MONITORING_STATUS.RUNNING:
+        openModal({
+          title: "모니터링을 종료할까요?",
+          description:
+            "확인을 누르면 모니터링을 종료하고\n수면 분석이 시작돼요.",
+          onConfirm: async () => {
+            closeModal();
+            await stopSession();
+          },
+        });
+        break;
+      case MONITORING_STATUS.STOPPED:
+        navigate(`/history/${reportIdRef.current || ""}`);
+        break;
+      default:
+        break;
+    }
+  };
 
   useEffect(() => {
     const handleBeforeUnload = (e) => {
