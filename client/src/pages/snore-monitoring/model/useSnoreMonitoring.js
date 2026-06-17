@@ -31,9 +31,7 @@ export const useSnoreMonitoring = () => {
   const { execute: updateSessionAsync } = useAsync(updateSession);
   const { execute: createSnoreEventAsync } = useAsync(createSnoreEvent);
   const { execute: createAlarmLogAsync } = useAsync(createAlarmLog);
-  const { execute: predictSnoreAsync } = useAsync(
-    IS_TEST_MODE ? mockPredictSnore : predictSnore,
-  );
+  const { execute: predictSnoreAsync } = useAsync(predictSnore);
 
   // --- Refs ---
   const sessionIdRef = useRef(null);
